@@ -33,9 +33,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
-    user_text = update.message.text.lower() # Convert to lowercase for better matching
+    user_text = update.message.text.lower().strip()
     
-    # IGNORE very short messages (e.g. "hi", "salam", "ok")
+    # IGNORE very short messages (e.g. "hi", "salam", "ok", "boi")
     if len(user_text) < 4:
         return
 
@@ -46,51 +46,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not titles:
         return
 
-    # --- SEARCH ALGORITHM ---
-    # We get top 3 matches. 
-    # scorer=fuzz.token_set_ratio is good for "partial" matches (finding book name inside a sentence)
-    matches = process.extract(user_text, titles, scorer=fuzz.token_set_ratio, limit=5)
+    # --- INTELLIGENT SEARCH ---
+    # We use 'token_sort_ratio' instead of 'token_set_ratio'.
+    # Why? 'token_set' matches partial words (like "er") giving 100% score.
+    # 'token_sort' forces the bot to match the MAIN words of the book.
+    matches = process.extract(user_text, titles, scorer=fuzz.token_sort_ratio, limit=5)
 
-    # Filter out bad matches (Keep only score > 75)
-    valid_matches = [m for m in matches if m[1] > 75]
+    # Filter: Only keep matches with score > 65
+    valid_matches = [m for m in matches if m[1] > 65]
 
-    # IF NO GOOD MATCHES FOUND:
     if not valid_matches:
-        # We generally stay silent so we don't annoy the group.
-        # But if the user EXPLICITLY asked "book", maybe reply? 
-        # For now: Silence is golden in groups.
-        return 
+        return # Silence if no good match found
 
-    # IF EXACT MATCH FOUND (Score > 90):
+    # --- INTERACTIVE REPLY ---
+    
+    # 1. PERFECT MATCH (Confidence > 88)
+    # If we are super sure, just give the button immediately.
     best_match = valid_matches[0]
-    if best_match[1] > 90:
+    if best_match[1] > 88:
         book = book_map[best_match[0]]
         link = book.get(BOOK_LINK_KEY, "#")
         
-        # Create a "Download" button
         keyboard = [[InlineKeyboardButton("📥 Download PDF", url=link)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            f"📖 **{best_match[0]}**\n\nI found this book for you!",
+            f"✅ **Found it!**\n\n📖 {best_match[0]}",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
         return
 
-    # IF AMBIGUOUS MATCHES (Score 75-90):
-    # Send a list of buttons so the user can choose
+    # 2. MAYBE MATCH (Confidence 65-88)
+    # Give the user a choice.
     keyboard = []
-    for name, score in valid_matches[:3]: # limit to top 3
+    for name, score in valid_matches[:3]: # Show top 3 options
         book = book_map[name]
         link = book.get(BOOK_LINK_KEY, "#")
-        # Add a button for each book found
+        # Button label: Book Title
         keyboard.append([InlineKeyboardButton(f"📖 {name}", url=link)])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "📚 **I found a few books similar to your request:**",
+        "🤔 **Did you mean one of these?**",
         reply_markup=reply_markup
     )
 
@@ -101,4 +100,6 @@ if __name__ == '__main__':
     echo_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
     application.add_handler(echo_handler)
     
+    print("Bot is restarting and listening...")
     application.run_polling()
+

@@ -7,136 +7,195 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-from thefuzz import process, fuzz
+from rapidfuzz import process, fuzz, utils
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
 DATA_URL = "https://raw.githubusercontent.com/Meher-Hazan/Darrusunnat-PDF-Library/main/books_data.json"
+# ⚠️ REPLACE THIS WITH YOUR RENDER URL
 RENDER_URL = "https://library-bot-amuk.onrender.com" 
 
 BOOK_NAME_KEY = "title"
 BOOK_LINK_KEY = "link"
 
-# --- PART 1: THE FAKE WEB SERVER (To satisfy Render) ---
+# --- SMART SYNONYM DICTIONARY (English -> Bangla) ---
+# This makes the bot understand meaning, not just letters.
+SYNONYMS = {
+    "biography": "jiboni",
+    "history": "itihas",
+    "prayer": "namaz",
+    "fasting": "roza",
+    "prophet": "nabi",
+    "messenger": "rasul",
+    "life": "jibon",
+    "rules": "masala",
+    "dream": "shopno",
+    "women": "nari",
+    "paradise": "jannat",
+    "hell": "jahannam"
+}
+
+# --- PART 1: FAKE SERVER & SELF-PING (Keep Alive) ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive and running!")
+        self.wfile.write(b"Einstein Bot is Active")
 
-def start_web_server():
+def start_server():
     port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
-    print(f"Fake Web Server listening on port {port}")
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", port), SimpleHandler).serve_forever()
 
-# --- PART 2: THE SELF-PINGER (To prevent Sleep Mode) ---
-def ping_self():
+def keep_alive():
     while True:
-        # Wait 10 minutes (600 seconds)
-        time.sleep(600) 
+        time.sleep(600) # Ping every 10 mins
         try:
-            # The bot visits its own website to say "I am busy, don't kill me"
-            response = requests.get(RENDER_URL)
-            print(f"Self-Ping Status: {response.status_code}")
-        except Exception as e:
-            print(f"Self-Ping Failed: {e}")
+            requests.get(RENDER_URL)
+            print("Self-ping successful.")
+        except:
+            pass
 
-# --- PART 3: BOT BRAIN (Bangla Intelligent) ---
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
+# --- PART 2: INTELLIGENCE ENGINE ---
+logging.basicConfig(level=logging.INFO)
 BOOKS_DB = []
-SEARCH_INDEX = {} 
+SEARCH_INDEX = {}
 
-def normalize_text(text):
+def smart_clean(text):
+    """
+    Advanced Cleaner: Handles synonyms, removes junk, normalizes text.
+    """
     if not text: return ""
     text = text.lower()
+    
+    # 1. Remove file extensions & symbols
     text = text.replace(".pdf", "").replace("_", " ").replace("-", " ")
-    text = re.sub(r'\d+', '', text)
-    stop_words = [
-        "pdf", "book", "link", "download", "dao", "chai", "plz", "admin", "er",
-        "বই", "এর", "পিডিএফ", "লিংক", "দাও", "চাই", "আছে", "কি", "সাহায্য", "করুন", "ভাই", "প্লিজ"
-    ]
-    for word in stop_words:
-        text = re.sub(r'\b' + word + r'\b', '', text)
-    return re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'[^\w\s]', '', text) # Remove punctuation
+    text = re.sub(r'\d+', '', text)    # Remove numbers
+    
+    # 2. Split into words
+    words = text.split()
+    
+    # 3. Filter Junk Words & Apply Synonyms
+    clean_words = []
+    stop_words = {"pdf", "book", "link", "download", "dao", "chai", "plz", "admin", "er", "ar", "boi", "the"}
+    
+    for w in words:
+        if w in stop_words: continue
+        # Check if it's an English word with a Bangla synonym
+        if w in SYNONYMS:
+            clean_words.append(SYNONYMS[w]) # Use the Bangla version
+        else:
+            clean_words.append(w)
+            
+    return " ".join(clean_words)
 
-try:
-    print("Fetching and Indexing Library...")
-    response = requests.get(DATA_URL)
-    if response.status_code == 200:
-        BOOKS_DB = response.json()
-        SEARCH_INDEX = {}
-        for book in BOOKS_DB:
-            raw_title = book.get(BOOK_NAME_KEY, "")
-            clean_title = normalize_text(raw_title)
-            if clean_title:
-                SEARCH_INDEX[clean_title] = book
-        print(f"Indexed {len(SEARCH_INDEX)} books.")
-    else:
-        print("Failed to load books.")
-except Exception as e:
-    print(f"Error: {e}")
+def fetch_books():
+    """Loads and Indexes books with the Smart Cleaner"""
+    global BOOKS_DB, SEARCH_INDEX
+    try:
+        print("Downloading Library...")
+        resp = requests.get(DATA_URL)
+        if resp.status_code == 200:
+            BOOKS_DB = resp.json()
+            SEARCH_INDEX = {}
+            for book in BOOKS_DB:
+                raw_name = book.get(BOOK_NAME_KEY, "")
+                # We store TWO versions: 
+                # 1. The Clean Searchable Name
+                # 2. The Original Book Object
+                clean_name = smart_clean(raw_name)
+                if clean_name:
+                    SEARCH_INDEX[clean_name] = book
+            print(f"Brain loaded with {len(SEARCH_INDEX)} books.")
+        else:
+            print("Failed to download database.")
+    except Exception as e:
+        print(f"Error: {e}")
 
+# --- PART 3: THE SEARCH LOGIC (The "Brain") ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
-    user_text = update.message.text
-    cleaned_query = normalize_text(user_text)
     
-    if len(cleaned_query) < 2: return
+    query = smart_clean(update.message.text)
+    if len(query) < 3: return # Ignore short junk
+
     clean_titles = list(SEARCH_INDEX.keys())
     if not clean_titles: return
 
-    matches = process.extract(cleaned_query, clean_titles, scorer=fuzz.WRatio, limit=5)
-    valid_matches = [m for m in matches if m[1] > 75]
+    # --- LEVEL 1: STRICT TOKEN SEARCH (The "Librarian") ---
+    # This looks for EXACT word matches (e.g. "Iman" matches "Iman", not "Biman")
+    strict_matches = []
+    query_tokens = set(query.split())
+    
+    for title in clean_titles:
+        title_tokens = set(title.split())
+        # Check if ALL query words exist in the title
+        if query_tokens.issubset(title_tokens):
+            strict_matches.append((title, 100)) # Perfect score
+            
+    # --- LEVEL 2: FUZZY SEARCH (The "Guesser") ---
+    # Only run this to fill up the list or if strict search failed
+    fuzzy_matches = process.extract(
+        query, 
+        clean_titles, 
+        scorer=fuzz.token_sort_ratio, 
+        limit=5
+    )
+    
+    # COMBINE RESULTS (Strict first, then Fuzzy)
+    # We prioritize strict matches.
+    final_results = strict_matches
+    
+    # Add fuzzy matches if they are good (>70) and not already in the list
+    existing_titles = [m[0] for m in final_results]
+    for title, score in fuzzy_matches:
+        if score > 70 and title not in existing_titles:
+            final_results.append((title, score))
+            
+    if not final_results: return
 
-    if not valid_matches: return 
-
-    best_clean_name, best_score = valid_matches[0]
-    best_book_obj = SEARCH_INDEX[best_clean_name]
-    real_title = best_book_obj.get(BOOK_NAME_KEY, "Unknown Title")
-    link = best_book_obj.get(BOOK_LINK_KEY, "#")
-
-    if best_score > 90:
-        keyboard = [[InlineKeyboardButton("📥 Download PDF", url=link)]]
+    # --- PART 4: SMART DISPLAY ---
+    top_match = final_results[0]
+    
+    # If the best match is super strong (>85), show it instantly
+    if top_match[1] > 85:
+        book = SEARCH_INDEX[top_match[0]]
+        title = book.get(BOOK_NAME_KEY, "Book")
+        link = book.get(BOOK_LINK_KEY, "#")
+        
+        kb = [[InlineKeyboardButton("📥 Download PDF", url=link)]]
         await update.message.reply_text(
-            f"✅ **বইটি খুঁজে পেয়েছি!**\n\n📖 {real_title}",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            f"✅ **Best Match:**\n📖 `{title}`", 
+            reply_markup=InlineKeyboardMarkup(kb), 
             parse_mode="Markdown"
         )
         return
 
-    keyboard = []
-    for clean_name, score in valid_matches[:3]:
-        if score > (best_score - 10): 
-            book_obj = SEARCH_INDEX[clean_name]
-            r_title = book_obj.get(BOOK_NAME_KEY, "Book")
-            r_link = book_obj.get(BOOK_LINK_KEY, "#")
-            btn_text = (r_title[:30] + '..') if len(r_title) > 30 else r_title
-            keyboard.append([InlineKeyboardButton(f"📖 {btn_text}", url=r_link)])
+    # Otherwise, show a list
+    kb = []
+    # Show max 3 relevant results
+    for title, score in final_results[:3]:
+        book = SEARCH_INDEX[title]
+        real_title = book.get(BOOK_NAME_KEY, "Book")
+        link = book.get(BOOK_LINK_KEY, "#")
+        # Smart Truncate: Keep title short for the button
+        display_name = (real_title[:35] + '..') if len(real_title) > 35 else real_title
+        kb.append([InlineKeyboardButton(f"📖 {display_name}", url=link)])
 
-    if keyboard:
-        await update.message.reply_text(
-            f"🔍 **আপনি কি এই বইগুলোর একটি খুঁজছেন?**",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    await update.message.reply_text(
+        f"🤔 **Did you mean one of these?**", 
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 if __name__ == '__main__':
-    # 1. Start Fake Web Server (Background)
-    threading.Thread(target=start_web_server, daemon=True).start()
+    # Initialize components
+    threading.Thread(target=start_server, daemon=True).start()
+    threading.Thread(target=keep_alive, daemon=True).start()
+    fetch_books()
     
-    # 2. Start Self-Pinger (Background)
-    threading.Thread(target=ping_self, daemon=True).start()
-    
-    # 3. Start Telegram Bot
-    if not BOT_TOKEN:
-        print("Error: BOT_TOKEN is missing!")
+    if BOT_TOKEN:
+        app = ApplicationBuilder().token(BOT_TOKEN).build()
+        app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+        print("Einstein Bot is Live...")
+        app.run_polling()
     else:
-        application = ApplicationBuilder().token(BOT_TOKEN).build()
-        echo_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
-        application.add_handler(echo_handler)
-        print("Bot Started...")
-        application.run_polling()
+        print("Error: No Token Found") 

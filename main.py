@@ -9,12 +9,13 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from rapidfuzz import process, fuzz, utils
 
-# IMPORT THE NEW ADMIN MODULE
+# IMPORT THE ADMIN MODULE
 import group_admin 
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
 DATA_URL = "https://raw.githubusercontent.com/Meher-Hazan/Darrusunnat-PDF-Library/main/books_data.json"
+# ⚠️ MAKE SURE THIS IS YOUR RENDER URL
 RENDER_URL = "https://library-bot-amuk.onrender.com" 
 
 BOOK_NAME_KEY = "title"
@@ -86,11 +87,9 @@ def fetch_books():
 
 # --- PART 3: MAIN LOGIC ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # --- SECURITY CHECKPOINT (NEW) ---
-    # The bot checks if the message is SPAM/BAD before looking for books.
-    # If check_and_moderate returns True, it means the message was deleted.
+    # SECURITY CHECK
     if await group_admin.check_and_moderate(update, context):
-        return # STOP PROCESSING (Don't search for books)
+        return 
 
     if not update.message or not update.message.text: return
     
@@ -109,11 +108,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             strict_matches.append((title, 100))
             
     # FUZZY SEARCH
-    fuzzy_matches = process.extract(query, clean_titles, scorer=fuzz.token_sort_ratio, limit=5)
+    # RapidFuzz returns (Title, Score, Index). We use limit=5
+    fuzzy_results = process.extract(query, clean_titles, scorer=fuzz.token_sort_ratio, limit=5)
     
     final_results = strict_matches
     existing_titles = [m[0] for m in final_results]
-    for title, score in fuzzy_matches:
+    
+    # --- BUG FIX IS HERE ---
+    # We ignore the 3rd value (_) which caused the crash
+    for title, score, _ in fuzzy_results:
         if score > 70 and title not in existing_titles:
             final_results.append((title, score))
             

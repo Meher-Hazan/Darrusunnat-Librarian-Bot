@@ -1,49 +1,48 @@
 import google.generativeai as genai
+import ujson
 from modules import config
 
-# Configure the AI
+# Configure AI
 if config.GEMINI_API_KEY:
     genai.configure(api_key=config.GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-pro')
 else:
     model = None
 
-def get_smart_keywords(user_text):
+def analyze_and_reply(user_text):
     """
-    Asks AI to translate a complex request into simple search keywords.
-    Example: "I am sad" -> ["Chinta", "Hutasha", "Sabr"]
+    The Master Brain.
+    Decides if the user wants a BOOK, a CHAT, or NOTHING.
+    Returns a dictionary: {"type": "SEARCH"|"CHAT"|"IGNORE", "data": ...}
     """
-    if not model: return []
-    
+    if not model: return {"type": "SEARCH", "data": user_text} # Fallback if no AI
+
     try:
-        # We tell the AI to act like a Librarian
+        # SUPER PROMPT: Forces AI to categorize the message
         prompt = (
-            f"Act as a Library Assistant. The user wants a book related to: '{user_text}'. "
-            "Suggest 3 simple, single-word search keywords (in Bangla or Banglish) "
-            "that are most likely to match Islamic book titles. "
-            "Output ONLY the words separated by commas. No explanations."
+            f"Analyze this user message: '{user_text}'.\n"
+            "Respond in strictly valid JSON format with two keys:\n"
+            "1. 'intent': Choose one of ['SEARCH', 'CHAT', 'IGNORE']\n"
+            "2. 'content': \n"
+            "   - If SEARCH: Extract only the core book name/keywords (remove 'pdf', 'book', 'give me').\n"
+            "   - If CHAT: Write a short, helpful Islamic answer (max 30 words).\n"
+            "   - If IGNORE: Leave empty string.\n\n"
+            "Rules:\n"
+            "- 'SEARCH': Use this if they ask for a file, pdf, book, or a specific title.\n"
+            "- 'CHAT': Use this for questions like 'Who is...', 'How to...', 'Meaning of...'.\n"
+            "- 'IGNORE': Use this for 'Hi', 'Hello', 'Thanks', 'Ok', 'Bot'.\n"
         )
         
         response = model.generate_content(prompt)
-        # Clean up the AI response
-        keywords = response.text.replace("\n", "").split(",")
-        # Clean whitespace
-        return [k.strip() for k in keywords]
-    except Exception as e:
-        print(f"AI Error: {e}")
-        return []
+        cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
+        result = ujson.loads(cleaned_text)
+        
+        return {
+            "type": result.get("intent", "SEARCH").upper(),
+            "data": result.get("content", "")
+        }
 
-def ask_general_question(question):
-    """
-    Answers general Islamic questions using AI.
-    """
-    if not model: return "⚠️ AI is not configured."
-    
-    try:
-        prompt = (
-            f"You are a helpful Islamic Assistant. Answer this question concisely (max 50 words): {question}"
-        )
-        response = model.generate_content(prompt)
-        return response.text
-    except:
-        return "⚠️ I am currently overloaded. Please try again later."
+    except Exception as e:
+        print(f"AI Brain Error: {e}")
+        # If AI fails, assume it's a search for safety
+        return {"type": "SEARCH", "data": user_text}

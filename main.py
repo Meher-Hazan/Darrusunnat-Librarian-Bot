@@ -10,7 +10,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQ
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CallbackQueryHandler, CommandHandler, InlineQueryHandler, filters
 
 # IMPORT MODULES
-from modules import config, admin_police, search_engine, stats
+from modules import config, admin_police, search_engine, stats, ai_brain
 
 # --- MEMORY ---
 USER_SEARCHES = {} 
@@ -54,20 +54,25 @@ def get_pagination_keyboard(results, page, total_pages):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats.log_user(update.effective_user.id)
-    await update.message.reply_text(f"👋 **Hello!**\nI am updated with {search_engine.count_books()} books.\nType a name to search!", parse_mode="Markdown")
+    await update.message.reply_text(f"👋 **Hello!**\n\nI am the AI Library Bot.\n\n🔎 **Search:** Just type a book name.\n🤖 **Ask AI:** Type `/ask Your Question`", parse_mode="Markdown")
 
 async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manually update the book list"""
     if update.effective_user.id != config.ADMIN_ID: return
-    
     await update.message.reply_text("🔄 **Updating Database...**")
-    success = search_engine.refresh_database()
+    if search_engine.refresh_database():
+        await update.message.reply_text(f"✅ **Done!** Books: {search_engine.count_books()}")
+    else: await update.message.reply_text("❌ Failed.")
+
+# --- NEW: AI QUESTION HANDLER ---
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    question = " ".join(context.args)
+    if not question:
+        await update.message.reply_text("⚠️ Usage: `/ask Who is Imam Bukhari?`")
+        return
     
-    if success:
-        count = search_engine.count_books()
-        await update.message.reply_text(f"✅ **Update Complete!**\nTotal Books: {count}")
-    else:
-        await update.message.reply_text("❌ **Update Failed.** Check logs.")
+    await update.message.reply_chat_action(action="typing")
+    answer = ai_brain.ask_general_question(question)
+    await update.message.reply_text(f"🤖 **AI Answer:**\n\n{answer}", parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats.log_user(update.effective_user.id)
@@ -75,8 +80,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
 
     user_text = update.message.text
+    
+    # 1. ATTEMPT NORMAL SEARCH
     matches = search_engine.search_book(user_text)
 
+    # 2. IF NO MATCH -> ACTIVATE AI BRAIN 🧠
+    if not matches:
+        # Let the user know we are trying harder
+        status_msg = await update.message.reply_text("🤔 **Searching deeply using AI...**")
+        
+        # Ask AI for better keywords
+        ai_keywords = ai_brain.get_smart_keywords(user_text)
+        
+        if ai_keywords:
+            # Try searching with each AI keyword
+            for keyword in ai_keywords:
+                new_matches = search_engine.search_book(keyword)
+                # Avoid duplicates
+                for m in new_matches:
+                    if m not in matches:
+                        matches.append(m)
+        
+        # Delete the "Searching..." message
+        await status_msg.delete()
+
+    # 3. FINAL CHECK
     if not matches:
         kb = [[InlineKeyboardButton("📝 Request Book", callback_data=f"req_{user_text[:20]}")]]
         await update.message.reply_text(f"❌ **No result for '{user_text}'.**\nRequest it?", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
@@ -84,7 +112,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     USER_SEARCHES[update.effective_user.id] = matches
     total_pages = (len(matches) + 4) // 5
-    await update.message.reply_text(f"🔍 **Found {len(matches)} books:**", reply_markup=get_pagination_keyboard(matches, 0, total_pages), parse_mode="Markdown")
+    
+    # Custom message if AI helped
+    header = f"🔍 **Found {len(matches)} books:**"
+    
+    await update.message.reply_text(header, reply_markup=get_pagination_keyboard(matches, 0, total_pages), parse_mode="Markdown")
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -124,11 +156,8 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ))
     await update.inline_query.answer(articles, cache_time=10)
 
-# --- BROADCAST (Now supports Images) ---
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != config.ADMIN_ID: return
-
-    # Check if admin is replying to a photo
     is_photo = False
     photo_id = None
     msg_text = " ".join(context.args)
@@ -137,83 +166,64 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.message.reply_to_message.photo:
             is_photo = True
             photo_id = update.message.reply_to_message.photo[-1].file_id
-            # Use caption if text not provided
-            if not msg_text:
-                msg_text = update.message.reply_to_message.caption or ""
+            if not msg_text: msg_text = update.message.reply_to_message.caption or ""
 
     if not msg_text and not is_photo:
-        await update.message.reply_text("⚠️ Usage: `/broadcast Message` OR Reply to a photo with `/broadcast`")
+        await update.message.reply_text("⚠️ Usage: `/broadcast Msg` OR Reply to photo")
         return
 
     users = stats.get_all_users()
-    await update.message.reply_text(f"📢 Broadcasting to {len(users)} users...")
-    
-    count = 0
+    await update.message.reply_text(f"📢 Sending to {len(users)} users...")
     for uid in users:
         try:
-            if is_photo:
-                await context.bot.send_photo(chat_id=uid, photo=photo_id, caption=msg_text, parse_mode="Markdown")
-            else:
-                await context.bot.send_message(chat_id=uid, text=f"📢 **Announcement:**\n\n{msg_text}", parse_mode="Markdown")
-            count += 1
+            if is_photo: await context.bot.send_photo(chat_id=uid, photo=photo_id, caption=msg_text, parse_mode="Markdown")
+            else: await context.bot.send_message(chat_id=uid, text=f"📢 **Announcement:**\n\n{msg_text}", parse_mode="Markdown")
             await asyncio.sleep(0.05)
         except: pass
-    await update.message.reply_text(f"✅ Sent to {count} users.")
+    await update.message.reply_text("✅ Done.")
 
-# --- AUTOMATION JOBS ---
-
-# 1. Database Auto-Updater (Every 30 mins)
-async def auto_update_db(context: ContextTypes.DEFAULT_TYPE):
-    search_engine.refresh_database()
-
-# 2. Random Book (Every 4 Hours)
 async def send_random_book(context: ContextTypes.DEFAULT_TYPE):
     book = search_engine.get_random_book()
     if not book: return
-    
     title = escape_markdown(book.get(config.KEY_TITLE, "Book"))
     link = book.get(config.KEY_LINK, "#")
-    image = book.get(config.KEY_IMAGE) # Get Image URL if exists
-
+    image = book.get(config.KEY_IMAGE)
     caption = f"✨ **Random Pick**\n\n📖 *{title}*\n\n🔗 [Read Now]({link})"
-
     try:
-        if image and "http" in image:
-            # Send Photo if valid image link exists
-            await context.bot.send_photo(chat_id=config.GROUP_ID, photo=image, caption=caption, parse_mode="MarkdownV2")
-        else:
-            # Send Text only
-            await context.bot.send_message(chat_id=config.GROUP_ID, text=caption, parse_mode="MarkdownV2")
-    except Exception as e:
-        print(f"Daily Book Error: {e}")
+        if image and "http" in image: await context.bot.send_photo(chat_id=config.GROUP_ID, photo=image, caption=caption, parse_mode="MarkdownV2")
+        else: await context.bot.send_message(chat_id=config.GROUP_ID, text=caption, parse_mode="MarkdownV2")
+    except: pass
 
-# --- MAIN ---
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == config.ADMIN_ID:
+        await update.message.reply_text(stats.get_stats(), parse_mode="Markdown")
+
+async def auto_update_db(context: ContextTypes.DEFAULT_TYPE):
+    search_engine.refresh_database()
+
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
-    search_engine.refresh_database() # Initial Load
+    search_engine.refresh_database()
     
     threading.Thread(target=start_server, daemon=True).start()
     threading.Thread(target=keep_alive, daemon=True).start()
     
     if config.BOT_TOKEN:
         app = ApplicationBuilder().token(config.BOT_TOKEN).build()
-        
-        # Commands & Messages
         app.add_handler(CommandHandler("start", start_command))
-        app.add_handler(CommandHandler("refresh", refresh_command)) # <--- NEW
+        app.add_handler(CommandHandler("refresh", refresh_command))
         app.add_handler(CommandHandler("broadcast", broadcast_command))
+        app.add_handler(CommandHandler("stats", stats_command))
+        app.add_handler(CommandHandler("ask", ask_command)) # <--- NEW COMMAND
+        
         app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
         app.add_handler(CallbackQueryHandler(handle_callback))
         app.add_handler(InlineQueryHandler(inline_query))
         
-        # Job Queue (Timers)
         if app.job_queue:
-            # Random Book every 4 hours (14400s)
             app.job_queue.run_repeating(send_random_book, interval=config.RANDOM_BOOK_INTERVAL, first=10)
-            # Update DB every 30 mins (1800s)
             app.job_queue.run_repeating(auto_update_db, interval=config.DB_REFRESH_INTERVAL, first=1800)
         
-        print("🚀 Ultimate Bot Started...")
+        print("🤖 AI Bot Started...")
         app.run_polling()
-    else:
-        print("Error: BOT_TOKEN missing")
+    else: print("Error: BOT_TOKEN missing")

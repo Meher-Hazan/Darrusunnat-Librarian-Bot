@@ -2,40 +2,47 @@ import os
 
 # --- SECURITY ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
 DATA_URL = "https://raw.githubusercontent.com/Meher-Hazan/Darrusunnat-PDF-Library/main/books_data.json"
 RENDER_URL = "https://library-bot-amuk.onrender.com" 
 
-# --- SETTINGS ---
-ADMIN_ID = 123456789  # <--- REPLACE WITH YOUR NUMERIC ID
-GROUP_ID = -1001234567890 # <--- REPLACE WITH YOUR GROUP ID
+# --- ADMIN SETTINGS ---
+ADMIN_ID = 123456789  
+GROUP_ID = -1001234567890 
 
-# TIMERS (In Seconds)
-# 4 Hours = 14400 seconds
+# TIMERS
 RANDOM_BOOK_INTERVAL = 14400 
-# Check for new books every 30 minutes
 DB_REFRESH_INTERVAL = 1800
 
-# JSON KEYS (What your database uses)
+# JSON KEYS
 KEY_TITLE = "title"
 KEY_LINK = "link"
-KEY_IMAGE = "image" # <--- New Key for Pictures
+KEY_IMAGE = "image"
 
 # --- FILES ---
 STATS_FILE = "stats.json"
 USERS_FILE = "user_database.json"
 
-# --- LOGIC ---
+# --- LISTS ---
 SYNONYMS = {
     "biography": "jiboni", "history": "itihas", "prayer": "namaz",
     "fasting": "roza", "prophet": "nabi", "messenger": "rasul",
     "life": "jibon", "rules": "masala", "dream": "shopno",
-    "women": "nari", "paradise": "jannat", "hell": "jahannam"
+    "women": "nari", "paradise": "jannat", "hell": "jahannam",
+    "vol": "khondo", "part": "part"
 }
 
 BAD_WORDS = [
     "scam", "bitcoin", "investment", "crypto", "sex", "porn", "xxx", 
     "fucker", "bitch", "whore", "asshole", "casino", "betting",
-    "কুত্তা", "হারামি", "সোনা", "বাল", "চুদ", "খানকি", "মাগি"
+    "signals", "pump", "trading", "traders", "profit", "giveaway",
+    "doubling", "airdrop", "presale", "elon", "musk", "saylor",
+    "shiba", "doge", "forex", "binary", "binance", "coinbase",
+    "join now", "join here", "click here", "dm me", "inbox me",
+    "investment plan", "make money",
+    "কুত্তা", "হারামি", "সোনা", "বাল", "চুদ", "খানকি", "মাগি",
+    "ল্যাংটা", "চুদির", "বোকাচোদা"
 ]
 
 STOP_WORDS = {

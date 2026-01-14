@@ -1,91 +1,78 @@
-import google.generativeai as genai
+import os
 import ujson
-import time
+from groq import Groq
 from modules import config
 
-# List of models to try (in order of preference)
-MODELS_TO_TRY = ["gemini-1.5-flash", "gemini-pro", "gemini-1.0-pro"]
-active_model = None
+# Initialize Groq Client
+client = None
+if config.GROQ_API_KEY:
+    try:
+        client = Groq(api_key=config.GROQ_API_KEY)
+    except Exception as e:
+        print(f"Groq Config Error: {e}")
 
-def configure_model():
-    """Tries to connect to ANY working Google Model"""
-    global active_model
-    
-    if not config.GEMINI_API_KEY:
-        print("❌ No API Key found.")
-        return
-
-    genai.configure(api_key=config.GEMINI_API_KEY)
-
-    for model_name in MODELS_TO_TRY:
-        try:
-            print(f"🔄 Testing Model: {model_name}...")
-            model = genai.GenerativeModel(model_name)
-            # Test it with a tiny prompt
-            model.generate_content("Test")
-            print(f"✅ Success! Connected to {model_name}")
-            active_model = model
-            return
-        except Exception as e:
-            print(f"⚠️ Failed to load {model_name}: {e}")
-    
-    print("❌ ALL AI Models failed. Switching to Offline Mode.")
-
-# Run setup immediately
-configure_model()
-
-# --- OFFLINE BACKUP BRAIN ---
-# If AI fails, this simple logic handles greetings so the bot doesn't look stupid.
+# --- OFFLINE BACKUP (Safety Net) ---
 OFFLINE_GREETINGS = {
     "hi", "hello", "salam", "assalamu", "alaikum", "hey", "bot", "kemon", "acho"
 }
 
 def fallback_logic(user_text):
-    """
-    Used when AI is broken.
-    Detects basic greetings and returns CHAT intent.
-    Everything else becomes SEARCH.
-    """
+    """Used if AI fails or Internet is down"""
     text_lower = user_text.lower()
-    
-    # Check if any word is a greeting
     words = text_lower.split()
     for w in words:
         if w in OFFLINE_GREETINGS:
             return {
                 "type": "CHAT", 
-                "data": "👋 **Hello!**\nI am currently in 'Offline Mode' (AI is reconnecting), but I can still search for books! Just type the name."
+                "data": "👋 **Hello!**\nI am connected to the library. Type a book name to search!"
             }
-    
-    # Default to Search
+    # Default assumption: It's a search
     return {"type": "SEARCH", "data": user_text}
 
 def analyze_and_reply(user_text):
     """
-    The Master Brain.
-    Tries AI first. If AI crashes/fails, uses Fallback Logic.
+    The Master Brain (Powered by Groq/Llama-3)
     """
-    global active_model
-
-    # 1. If AI is dead, use Offline Backup
-    if not active_model:
+    # 1. Safety Check
+    if not client:
         return fallback_logic(user_text)
 
     try:
-        # 2. Ask AI
-        prompt = (
-            f"Analyze this user message: '{user_text}'.\n"
-            "Respond in strictly valid JSON format with two keys:\n"
-            "1. 'intent': Choose one of ['SEARCH', 'CHAT', 'IGNORE']\n"
-            "2. 'content': \n"
-            "   - If SEARCH: Extract only the book title (remove 'pdf', 'book').\n"
-            "   - If CHAT: Write a short, helpful Islamic answer (max 50 words).\n"
-            "   - If IGNORE: Leave empty string.\n"
+        # 2. THE LIBRARIAN PROMPT
+        # We teach the AI to understand Bangla/English requests and extract the core title.
+        system_instruction = (
+            "You are a smart Library Assistant for an Islamic PDF Bot. "
+            "Your job is to classify the user's message into one of three intents.\n\n"
+            
+            "OUTPUT FORMAT: strictly valid JSON with keys 'intent' and 'content'.\n\n"
+            
+            "INTENT RULES:\n"
+            "1. 'SEARCH': User wants a book, pdf, or topic. (e.g., 'Give me Bukhari', 'Iman books', 'Namazer boi')\n"
+            "   -> CONTENT: Extract ONLY the core book name or topic. Remove words like 'pdf', 'file', 'boi', 'dao', 'plz', 'amake', 'chai'.\n"
+            "   -> Example: 'Amake Bukhari Sharif er pdf dao' -> content: 'Bukhari Sharif'\n"
+            "   -> Example: 'History of Islam' -> content: 'History of Islam'\n\n"
+            
+            "2. 'CHAT': User is greeting or asking a general question. (e.g., 'Hi', 'Kemon acho', 'Who is Allah?', 'Meaning of Sabr')\n"
+            "   -> CONTENT: Write a short, helpful, polite answer (max 40 words).\n\n"
+            
+            "3. 'IGNORE': User is spamming or sending nonsense.\n"
+            "   -> CONTENT: Leave empty.\n"
+        )
+
+        completion = client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_text}
+            ],
+            temperature=0.3, # Low temperature = More precise/less creative
+            max_tokens=150,
+            response_format={"type": "json_object"}
         )
         
-        response = active_model.generate_content(prompt)
-        cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
-        result = ujson.loads(cleaned_text)
+        # Parse Response
+        response_text = completion.choices[0].message.content
+        result = ujson.loads(response_text)
         
         return {
             "type": result.get("intent", "SEARCH").upper(),
@@ -93,6 +80,5 @@ def analyze_and_reply(user_text):
         }
 
     except Exception as e:
-        print(f"AI Runtime Error: {e}")
-        # If AI fails mid-conversation, use fallback
+        print(f"Groq Brain Error: {e}")
         return fallback_logic(user_text)

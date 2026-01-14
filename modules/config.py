@@ -2,8 +2,7 @@ import os
 
 # --- SECURITY ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") 
 DATA_URL = "https://raw.githubusercontent.com/Meher-Hazan/Darrusunnat-PDF-Library/main/books_data.json"
 RENDER_URL = "https://library-bot-amuk.onrender.com" 
 

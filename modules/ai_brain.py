@@ -4,24 +4,33 @@ from modules import config
 
 # Configure AI
 model = None
-if config.GEMINI_API_KEY:
+
+def configure_model():
+    """Initializes the AI Model with a safe fallback"""
+    global model
+    if not config.GEMINI_API_KEY:
+        return
+
     try:
         genai.configure(api_key=config.GEMINI_API_KEY)
-        # Switched to 1.5-flash (Faster & Better for Free Tier)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # We use 'gemini-pro' because it is the most stable and available model
+        model = genai.GenerativeModel('gemini-pro')
     except Exception as e:
         print(f"AI Config Error: {e}")
+
+# Run configuration immediately
+configure_model()
 
 def analyze_and_reply(user_text):
     """
     The Master Brain.
     Decides if the user wants a BOOK, a CHAT, or NOTHING.
     """
-    # 1. DEBUG: If API Key is missing/invalid, tell the user immediately.
+    # 1. Safety Check: Is AI alive?
     if not model: 
         return {
             "type": "CHAT", 
-            "data": "⚠️ **System Error:** AI is disabled. Please check your `GEMINI_API_KEY` in Render Environment Variables."
+            "data": "⚠️ **System Error:** AI is disabled. Please check your `GEMINI_API_KEY` in Render."
         }
 
     try:
@@ -52,6 +61,6 @@ def analyze_and_reply(user_text):
         }
 
     except Exception as e:
+        # If the AI fails (e.g., 404 or Overloaded), we Default to Search to be safe
         print(f"AI Brain Error: {e}")
-        # If AI crashes, we return the error message so you can see it in the bot
-        return {"type": "CHAT", "data": f"⚠️ **AI Error:** {str(e)}"}
+        return {"type": "SEARCH", "data": user_text}

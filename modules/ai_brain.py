@@ -1,57 +1,89 @@
 import google.generativeai as genai
 import ujson
+import time
 from modules import config
 
-# Configure AI
-model = None
+# List of models to try (in order of preference)
+MODELS_TO_TRY = ["gemini-1.5-flash", "gemini-pro", "gemini-1.0-pro"]
+active_model = None
 
 def configure_model():
-    """Initializes the AI Model with a safe fallback"""
-    global model
+    """Tries to connect to ANY working Google Model"""
+    global active_model
+    
     if not config.GEMINI_API_KEY:
+        print("❌ No API Key found.")
         return
 
-    try:
-        genai.configure(api_key=config.GEMINI_API_KEY)
-        # We use 'gemini-pro' because it is the most stable and available model
-        model = genai.GenerativeModel('gemini-pro')
-    except Exception as e:
-        print(f"AI Config Error: {e}")
+    genai.configure(api_key=config.GEMINI_API_KEY)
 
-# Run configuration immediately
+    for model_name in MODELS_TO_TRY:
+        try:
+            print(f"🔄 Testing Model: {model_name}...")
+            model = genai.GenerativeModel(model_name)
+            # Test it with a tiny prompt
+            model.generate_content("Test")
+            print(f"✅ Success! Connected to {model_name}")
+            active_model = model
+            return
+        except Exception as e:
+            print(f"⚠️ Failed to load {model_name}: {e}")
+    
+    print("❌ ALL AI Models failed. Switching to Offline Mode.")
+
+# Run setup immediately
 configure_model()
+
+# --- OFFLINE BACKUP BRAIN ---
+# If AI fails, this simple logic handles greetings so the bot doesn't look stupid.
+OFFLINE_GREETINGS = {
+    "hi", "hello", "salam", "assalamu", "alaikum", "hey", "bot", "kemon", "acho"
+}
+
+def fallback_logic(user_text):
+    """
+    Used when AI is broken.
+    Detects basic greetings and returns CHAT intent.
+    Everything else becomes SEARCH.
+    """
+    text_lower = user_text.lower()
+    
+    # Check if any word is a greeting
+    words = text_lower.split()
+    for w in words:
+        if w in OFFLINE_GREETINGS:
+            return {
+                "type": "CHAT", 
+                "data": "👋 **Hello!**\nI am currently in 'Offline Mode' (AI is reconnecting), but I can still search for books! Just type the name."
+            }
+    
+    # Default to Search
+    return {"type": "SEARCH", "data": user_text}
 
 def analyze_and_reply(user_text):
     """
     The Master Brain.
-    Decides if the user wants a BOOK, a CHAT, or NOTHING.
+    Tries AI first. If AI crashes/fails, uses Fallback Logic.
     """
-    # 1. Safety Check: Is AI alive?
-    if not model: 
-        return {
-            "type": "CHAT", 
-            "data": "⚠️ **System Error:** AI is disabled. Please check your `GEMINI_API_KEY` in Render."
-        }
+    global active_model
+
+    # 1. If AI is dead, use Offline Backup
+    if not active_model:
+        return fallback_logic(user_text)
 
     try:
-        # SUPER PROMPT: Forces AI to categorize the message
+        # 2. Ask AI
         prompt = (
             f"Analyze this user message: '{user_text}'.\n"
             "Respond in strictly valid JSON format with two keys:\n"
             "1. 'intent': Choose one of ['SEARCH', 'CHAT', 'IGNORE']\n"
             "2. 'content': \n"
-            "   - If SEARCH: Extract only the core book name/keywords (remove 'pdf', 'book', 'give me').\n"
+            "   - If SEARCH: Extract only the book title (remove 'pdf', 'book').\n"
             "   - If CHAT: Write a short, helpful Islamic answer (max 50 words).\n"
-            "   - If IGNORE: Leave empty string.\n\n"
-            "Rules:\n"
-            "- 'SEARCH': Use this if they ask for a file, pdf, book, or a specific title.\n"
-            "- 'CHAT': Use this for questions like 'Who is...', 'How to...', 'Meaning of...', 'Hi', 'Hello', 'Kemon acho'.\n"
-            "- 'IGNORE': Use this for short spam or nonsense.\n"
+            "   - If IGNORE: Leave empty string.\n"
         )
         
-        response = model.generate_content(prompt)
-        
-        # Clean up the AI response (sometimes it adds ```json markers)
+        response = active_model.generate_content(prompt)
         cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
         result = ujson.loads(cleaned_text)
         
@@ -61,6 +93,6 @@ def analyze_and_reply(user_text):
         }
 
     except Exception as e:
-        # If the AI fails (e.g., 404 or Overloaded), we Default to Search to be safe
-        print(f"AI Brain Error: {e}")
-        return {"type": "SEARCH", "data": user_text}
+        print(f"AI Runtime Error: {e}")
+        # If AI fails mid-conversation, use fallback
+        return fallback_logic(user_text)
